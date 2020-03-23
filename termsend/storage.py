@@ -67,14 +67,13 @@ class S3:
             continuation_token = xml_root.find('NextContinuationToken').text
 
     async def delete_multiple(self, *keys: str):
-        to_delete = '\n'.join(f'<Object><Key>{k}</Key></Object>' for k in keys)
-        xml = f"""
-        <?xml version="1.0" encoding="UTF-8"?>
-        <Delete xmlns="{xmlns}">
-           {to_delete}
-           <Quiet>true</Quiet>
-        </Delete>
-        """
+        xml = (
+            f'<?xml version="1.0" encoding="UTF-8"?>'
+            f'<Delete xmlns="{xmlns}">'
+            f' {"".join(f"<Object><Key>{k}</Key></Object>" for k in keys)}'
+            f' <Quiet>true</Quiet>'
+            f'</Delete>'
+        )
         check = base64.b64encode(hashlib.md5(xml.encode()).digest()).decode()
         r = await self._client.post('', data=xml.encode(), params=dict(delete=1), headers={'Content-MD5': check})
         debug(r.content)

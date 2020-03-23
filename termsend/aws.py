@@ -5,6 +5,7 @@ from binascii import hexlify
 from datetime import datetime, timezone
 from functools import reduce
 from typing import Any, Dict, Literal, Optional
+from urllib.parse import quote
 
 from httpx import URL, AsyncClient
 
@@ -14,7 +15,6 @@ logger = logging.getLogger('em2.smtp.aws')
 
 _AWS_AUTH_REQUEST = 'aws4_request'
 _CONTENT_TYPE = 'application/x-www-form-urlencoded'
-_SIGNED_HEADERS = 'content-type', 'host', 'x-amz-date'
 _CANONICAL_REQUEST = """\
 {method}
 {path}
@@ -90,27 +90,44 @@ class AwsClient:
         headers: Optional[Dict[str, str]],
     ):
         url = URL(f'https://{self.host}{path}', params=[(k, v) for k, v in sorted((params or {}).items())])
+        # debug(url, data, headers)
+        # from pathlib import Path
+        # Path('data.xml').write_bytes(data)
+        # h = ' '.join(f'-H "{k}: {v}"' for k, v in headers.items())
+        # print(f"curl -v '{url}' {h} --data-binary @data.xml")
         r = await self.client.request(
             method, url, data=data, headers=self._auth_headers(method, url, headers or {}, data)
         )
         if r.status_code != 200:
-            debug(r.status_code, r.content, r.url)
+            debug(r.status_code, r.url, r.history, r.content)
+
+            from xml.etree import ElementTree
+            xml_root = ElementTree.fromstring(r.content)
+            debug(
+                xml_root.find('StringToSign').text,
+                xml_root.find('CanonicalRequest').text,
+            )
         r.raise_for_status()
         return r
 
     def _auth_headers(
         self, method: Literal['GET', 'POST'], url: URL, headers: Dict[str, str], data: Optional[bytes] = None
-    ):
+    ) -> Dict[str, str]:
         n = utcnow()
         x_amz_date = n.strftime('%Y%m%dT%H%M%SZ')
         date_stamp = n.strftime('%Y%m%d')
         data = data or b''
         std_headers = {'content-type': _CONTENT_TYPE, 'host': self.host, 'x-amz-date': x_amz_date}
         all_headers = {k.lower(): v for k, v in sorted({**std_headers, **headers}.items())}
+        query_parts = []
+        if data:
+            query_parts.append(quote(data))
+        if url.query:
+            query_parts.append(url.query)
         ctx = dict(
             method=method,
             path=url.path,
-            query=url.query,
+            query='&'.join(query_parts),
             access_key=self.settings.aws_access_key,
             algorithm=_AUTH_ALGORITHM,
             x_amz_date=x_amz_date,
@@ -127,6 +144,7 @@ class AwsClient:
         canonical_headers = ''.join(f'{k}:{v}\n' for k, v in all_headers.items())
 
         canonical_request = _CANONICAL_REQUEST.format(canonical_headers=canonical_headers, **ctx).encode()
+        debug(canonical_request)
 
         s2s = _STRING_TO_SIGN.format(canonical_request_hash=hashlib.sha256(canonical_request).hexdigest(), **ctx)
 
